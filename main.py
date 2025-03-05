@@ -19,26 +19,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# File setup
+# File setup with error handling
 VENDORS_FILE = "vendors.csv"
 ITEMS_FILE = "items.csv"
 ORDERS_FILE = "orders.csv"
 UPLOADS_FILE = "uploads.csv"
+
+# Ensure files exist and are writable
 for file, headers in [
-    (VENDORS_FILE, ["vendor_name", "ogo_api_key", "knet_merchant_id", "vendor_wallet", "icon"]),
+    (VENDORS_FILE, ["vendor_name", "vendor_wallet", "icon"]),
     (ITEMS_FILE, ["vendor_name", "item_name", "price_kwd", "description"]),
     (ORDERS_FILE, ["order_id", "vendor", "item", "address", "user_wallet", "lat", "lon", "timestamp"]),
     (UPLOADS_FILE, ["order_id", "vendor", "user_wallet", "timestamp", "item", "price_kwd", "category", "icon"])
 ]:
-    if not os.path.exists(file):
-        with open(file, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)
-        if file == VENDORS_FILE:
-            with open(file, "a", newline="") as f:
+    try:
+        if not os.path.exists(file):
+            with open(file, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["FluxEats", "", "sim123", "0xVendor1", "🌌"])
-                writer.writerow(["NebulaBites", "", "sim456", "0xVendor2", "☄️"])
+                writer.writerow(headers)
+            if file == VENDORS_FILE:
+                with open(file, "a", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["FluxEats", "0xVendor1", "🌌"])
+                    writer.writerow(["NebulaBites", "0xVendor2", "☄️"])
+    except Exception as e:
+        print(f"Error creating file {file}: {str(e)}")
 
 def categorize_receipt(vendor):
     vendor = vendor.lower()
@@ -64,13 +69,23 @@ class Receipt(BaseModel):
 
 @app.get("/vendors")
 async def get_vendors():
-    vendors = pd.read_csv(VENDORS_FILE).set_index("vendor_name").to_dict("index")
-    return vendors
+    try:
+        if not os.path.exists(VENDORS_FILE):
+            raise HTTPException(status_code=500, detail="Vendors file not found")
+        vendors = pd.read_csv(VENDORS_FILE)
+        return vendors.set_index("vendor_name").to_dict("index")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading vendors: {str(e)}")
 
 @app.get("/items")
 async def get_items():
-    items = pd.read_csv(ITEMS_FILE).to_dict("records")
-    return items
+    try:
+        if not os.path.exists(ITEMS_FILE):
+            return []
+        items = pd.read_csv(ITEMS_FILE)
+        return items.to_dict("records")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading items: {str(e)}")
 
 @app.post("/order")
 async def create_order(order: Order):
@@ -80,12 +95,21 @@ async def create_order(order: Order):
         raise HTTPException(status_code=400, detail="Invalid wallet address")
     
     order_id = f"{order.vendor_name}-{sha256(order.item.encode()).hexdigest()[:8]}"
-    geolocator = Nominatim(user_agent="bawaba_rewards")
-    location = geolocator.geocode(order.delivery_address)
-    lat, lon = (location.latitude, location.longitude) if location else (0, 0)
-    with open(ORDERS_FILE, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([order_id, order.vendor_name, order.item, order.delivery_address, order.wallet_address, lat, lon, datetime.now().isoformat()])
+    try:
+        geolocator = Nominatim(user_agent="bawaba_rewards")
+        location = geolocator.geocode(order.delivery_address)
+        lat, lon = (location.latitude, location.longitude) if location else (0, 0)
+    except Exception as e:
+        print(f"Geocoding error: {str(e)}")
+        lat, lon = 0, 0  # Fallback to 0,0 if geocoding fails
+
+    try:
+        with open(ORDERS_FILE, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([order_id, order.vendor_name, order.item, order.delivery_address, order.wallet_address, lat, lon, datetime.now().isoformat()])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error writing order: {str(e)}")
+    
     return {"status": "success", "order_id": order_id, "reward": 210000}
 
 @app.post("/upload")
@@ -96,12 +120,21 @@ async def upload_receipt(receipt: Receipt, file: UploadFile = File(None)):
         raise HTTPException(status_code=400, detail="Invalid wallet address")
     
     category, icon = categorize_receipt(receipt.vendor)
-    with open(UPLOADS_FILE, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([receipt.order_id, receipt.vendor, receipt.wallet_address, datetime.now().isoformat(), receipt.item, receipt.price_kwd, category, icon])
+    try:
+        with open(UPLOADS_FILE, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([receipt.order_id, receipt.vendor, receipt.wallet_address, datetime.now().isoformat(), receipt.item, receipt.price_kwd, category, icon])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error writing upload: {str(e)}")
+    
     return {"status": "success", "reward": 100000}
 
 @app.get("/market")
 async def get_market():
-    df_uploads = pd.read_csv(UPLOADS_FILE)
-    return df_uploads.to_dict("records")
+    try:
+        if not os.path.exists(UPLOADS_FILE):
+            return []
+        df_uploads = pd.read_csv(UPLOADS_FILE)
+        return df_uploads.to_dict("records")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading market: {str(e)}")
